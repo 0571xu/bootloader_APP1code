@@ -1,0 +1,6 @@
+--c99 --gnu -c --cpu Cortex-M3 -D__MICROLIB -g -O0 --apcs=interwork -I ..\CMSIS -I ..\FWlib\inc -I ..\USER -I ..\FWlib\src -I ..\CMSIS\startup -I ..\FreeRTOS\inc -I ..\FreeRTOS\src -I ..\FreeRTOS -I ..\FreeRTOS\port
+-I.\RTE\_LED-DEMO
+-IC:\Keil_v5\ARM\PACK\ARM\CMSIS\5.7.0\CMSIS\Core\Include
+-IC:\Keil_v5\ARM\PACK\Keil\STM32F1xx_DFP\2.4.1\Device\Include
+-D__UVISION_VERSION="532" -D_RTE_ -DSTM32F10X_MD -D_RTE_ -DUSE_STDPERIPH_DRIVER -DSTM32F10X_HD -DconfigPRIO_BITS="4" -DconfigMAX_SYSCALL_INTERRUPT_PRIORITY="0x50"
+-o .\heap_1.o --omf_browse .\heap_1.crf --depend .\heap_1.d "..\FreeRTOS\port\heap_1.c"
