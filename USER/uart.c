@@ -3,20 +3,21 @@
 //bound:波特率
 //=======================================
 #include "uart.h"
+#include "ota_receive.h"
 #include "stm32f10x.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
-StreamBufferHandle_t uartStreamBuffer = NULL;
-QueueHandle_t atQueue;    // 存 AT 文本行
-QueueHandle_t dataQueue;  // 存 19 字节数据帧
+/* ==================== 全局变量 ==================== */
 
 uint8_t CercleBuffer[CercleBufferSize];
 volatile uint16_t read_pos = 0; // 用于跟踪从 DMA 缓冲区读取数据的位置
 
 uint8_t send_buf[100]; //发送缓冲区
 
+#define EN_USART1_RX 1
 
+/* ==================== 初始化 ==================== */
 
 void uart_init(u32 bound){
     //GPIO端口设置
@@ -123,7 +124,7 @@ void wifi_send_task(void *pvParameters)
 	// uint8_t buf[100];
     uint32_t notifyValue;
 
-    connect_init(0);
+//    connect_init(0);
 
 	while(1)
 	{
@@ -132,107 +133,31 @@ void wifi_send_task(void *pvParameters)
         {
             if(notifyValue == 0x01)
             {
-
+                char *str1 = "waiting!\r\n";
+                int len = strlen(str1);
+                for (int i = 0; i < len; i++) {
+                    USART_SendData(USART1, str1[i]);
+                    while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+                }
             }
             else if(notifyValue == 0x02)
             {
-                // 发送心跳
+                char *str2 = "start upgrade!\r\n";
+                int len = strlen(str2);
+                for (int i = 0; i < len; i++) {
+                USART_SendData(USART1, str2[i]);
+                while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+                }
 
             }
             else if(notifyValue == 0x03)
             {
                 // 检测连接状态
-                connect_init(0);
+//                connect_init(0);
             }
 		}
         vTaskDelay(pdMS_TO_TICKS(10));
 	}
-}
-
-void wifi_get_task(void *pvParameters)
-{
-    uint8_t byte;
-    uint8_t line[AT_LINE_MAX];
-    size_t  line_len = 0;
-    uint8_t frame[DATA_FRAME_LEN];
-    size_t  frame_len = 0;
-
-    while (1)
-    {
-        // 一次读一个字节，方便按状态切分
-        if (xStreamBufferReceive(uartStreamBuffer, &byte, 1, portMAX_DELAY) != 1)
-            continue;
-        /* ---------- 状态1：还没锁定帧头，先按 AT 行处理 ---------- */
-        if (frame_len == 0)
-        {
-            // 遇 \r\n 结尾，认为一行 AT 应答结束
-            if (byte == '\n' && line_len > 0)
-            {
-                line[line_len] = '\0';
-                // 送入 AT 队列
-                xQueueSend(atQueue, line, 0);
-                line_len = 0;
-                continue;
-            }
-
-            // 普通的 AT 文本
-            if (line_len < AT_LINE_MAX - 1)
-                line[line_len++] = byte;
-
-            // 如果当前字节是 0x55，可能是数据帧头，检查下一个字节
-            if (byte == 0x55)
-            {
-                // 把 0x55 放进 frame，等下一个字节确认是不是 0x44
-                frame[0] = 0x55;
-                frame_len = 1;
-            }
-            continue;
-        }
-
-        /* ---------- 状态2：已收 0x55，等 0x44 ---------- */
-        if (frame_len == 1)
-        {
-            if (byte == 0x44)
-            {
-                frame[1] = 0x44;
-                frame_len = 2;
-            }
-            else
-            {
-                // 不是 0x44，把 0x55 当普通文本，重新处理当前字节
-                if (line_len < AT_LINE_MAX - 1)
-                    line[line_len++] = 0x55;
-
-                frame_len = 0;
-
-                // 当前字节按 AT 文本处理
-                if (byte == '\n' && line_len > 0) {
-                    line[line_len] = '\0';
-                    xQueueSend(atQueue, line, 0);
-                    line_len = 0;
-                } else if (line_len < AT_LINE_MAX - 1) {
-                    line[line_len++] = byte;
-                    if (byte == 0x55) { frame[0] = 0x55; frame_len = 1; }
-                }
-            }
-            continue;
-        }
-
-        /* ---------- 状态3：攒数据帧到 19 字节 ---------- */
-        frame[frame_len++] = byte;
-
-        if (frame_len == DATA_FRAME_LEN)
-        {
-            // 校验帧尾
-            if (frame[17] == 0x33 && frame[18] == 0x22)
-            {
-                xQueueSend(dataQueue, frame, 0);   // 送数据队列
-            }
-            // 无论是否合法，都重置状态
-            frame_len = 0;
-            line_len  = 0;
-        }
-    }
 }
 
 static uint8_t bcd2dec(uint8_t b)
@@ -242,10 +167,10 @@ static uint8_t bcd2dec(uint8_t b)
 
 void StreamBuffer_Init(void)
 {
-    uartStreamBuffer = xStreamBufferCreate(2048, 1);
+    uartStreamBuffer = xStreamBufferCreate(STREAM_BUF_SIZE, 1);
     atQueue   = xQueueCreate(8, AT_LINE_MAX);
-    dataQueue = xQueueCreate(4, DATA_FRAME_LEN);
-	if(uartStreamBuffer == NULL || atQueue == NULL || dataQueue == NULL)
+    xFrameQueue = xQueueCreate(4, sizeof(fw_frame_t));
+	if(uartStreamBuffer == NULL || atQueue == NULL || xFrameQueue == NULL)
 	{
 		// 创建失败，处理错误
 		while(1);
@@ -359,7 +284,7 @@ void data_parse_task(void *pvParameters)
 
     while (1)
     {
-        if (xQueueReceive(dataQueue, frame, portMAX_DELAY) == pdTRUE)
+        if (xQueueReceive(xFrameQueue, frame, portMAX_DELAY) == pdTRUE)
         {
             if (frame[2] == 0x01 && frame[3] == 0x01)
             {
@@ -430,3 +355,4 @@ void connect_init(int status)
     uart1_send_at("AT+CIPSEND");
     while(wait_response(">", 1500));
 }
+

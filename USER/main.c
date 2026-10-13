@@ -9,100 +9,18 @@
 #include "stm32f10x.h"
 #include <string.h>
 #include "uart.h"
+#include "ota_receive.h"
 #include "led.h"
 #include "key.h"
 #include "delay.h"
 
-// Flash分区定义（适用于 STM32F103C8T6，64KB Flash）
-#define BOOTLOADER_BASE     0x08000000
-#define APPLICATION_BASE    0x08003000       // APP A 起始
-#define OTA_BUFFER_BASE     0x0800C000       // APP B / 缓冲区
-#define CONFIG_BASE         0x0800F800       // 参数区，页对齐
-
+// Flash分区基址见 ota_receive.h（BOOTLOADER_BASE / APPLICATION_BASE /
+// OTA_BUFFER_BASE / CONFIG_BASE / OTA_BUFFER_SIZE / FLASH_PAGE_SIZE），
+// 这里只补充本文件用到的分区大小。
 #define BOOTLOADER_SIZE     (12 * 1024)      // 12KB，给 Bootloader 留足余量
 #define APPLICATION_SIZE    (36 * 1024)      // 从 0x08003000 到 0x0800C000 = 36KB
-#define OTA_BUFFER_SIZE     (36 * 1024)      // 从 0x0800C000 到 0x0800F800 = 36KB
-#define FLASH_PAGE_SIZE     1024          // F103C8T6 的页大小 
 
-typedef enum {
-    Status_OK      = 0x00,
-    Status_ERROR   = 0x01,
-    Status_BUSY    = 0x02,
-    Status_TIMEOUT = 0x03
-} StatusTypeDef;
-
-// 升级标志结构
-#pragma pack(1)
-typedef struct {
-    uint32_t magic;
-    uint32_t update_flag;
-    uint32_t version;         // 改成整数
-    uint32_t firmware_size;
-    uint32_t crc32;
-} ota_config_t;
-#pragma pack()
-
-#define CURRENT_VERSION  0x00010000U   // V1.0
-
-StatusTypeDef flash_erase(uint32_t start_addr, uint32_t size);
-StatusTypeDef flash_write(uint32_t dest_addr, uint8_t *src, uint32_t size);
-
-// Flash擦除
-static StatusTypeDef flash_erase(uint32_t start_addr, uint32_t size)
-{
-    uint32_t page_addr;
-    uint32_t end_addr = start_addr + size;
-    FLASH_Status status;
-
-    // 向下对齐到页起始
-    page_addr = start_addr & ~(FLASH_PAGE_SIZE - 1);
-
-    FLASH_Unlock();
-
-    while (page_addr < end_addr) {
-        status = FLASH_ErasePage(page_addr);
-        if (status != FLASH_COMPLETE) {
-            FLASH_Lock();
-            return Status_ERROR;
-        }
-        page_addr += FLASH_PAGE_SIZE;
-    }
-
-    FLASH_Lock();
-    return Status_OK;
-}
-
-// Flash写入
-static StatusTypeDef flash_write(uint32_t dest_addr, uint8_t *src, uint32_t size)
-{
-    uint32_t i;
-    uint32_t word;
-    FLASH_Status status;
-
-    FLASH_Unlock();
-
-    for (i = 0; i < size; i += 4) {
-        // 最后一个不足 4 字节时用 0xFF 补齐（Flash 擦除后的默认值）
-        uint8_t b0 = (i + 0 < size) ? src[i + 0] : 0xFF;
-        uint8_t b1 = (i + 1 < size) ? src[i + 1] : 0xFF;
-        uint8_t b2 = (i + 2 < size) ? src[i + 2] : 0xFF;
-        uint8_t b3 = (i + 3 < size) ? src[i + 3] : 0xFF;
-
-        word = (uint32_t)b0
-             | ((uint32_t)b1 << 8)
-             | ((uint32_t)b2 << 16)
-             | ((uint32_t)b3 << 24);
-
-        status = FLASH_ProgramWord(dest_addr + i, word);
-        if (status != FLASH_COMPLETE) {
-            FLASH_Lock();
-            return Status_ERROR;
-        }
-    }
-
-    FLASH_Lock();
-    return Status_OK;
-}
+// OTA 升级标志结构 ota_config_t 及 OTA_MAGIC / CURRENT_VERSION 定义在 ota_receive.h
 
 /******************************************************************************************/
 #define bootloader  0
@@ -338,9 +256,21 @@ int main(void) {
 #include "freertos.h"
 #include "dma.h"
 
-TaskHandle_t xWifisendTaskHandle;
+TaskHandle_t xled_taskHandle;
 
-void request_upgrade(void);
+
+typedef struct
+{
+    GPIO_TypeDef* GPIOx;      // GPIO端口
+    uint16_t GPIO_Pin;        // GPIO引脚
+    uint32_t delay_on;       // 延时时间
+    uint32_t delay_off;       // 延时时间
+} LED_Config;
+
+LED_Config led1_config = {GPIOC, GPIO_Pin_13, 500, 500};
+
+void request_upgrade_task(void *pvParameters);
+void led_task(void *pvParameters);
 
 int main(void)
 {
@@ -357,8 +287,7 @@ int main(void)
     StreamBuffer_Init(); // 初始化 StreamBuffer
     __enable_irq();   // 显式打开全局中断    
     
-    char *str1 = "waiting!\r\n";
-    int len = strlen(str1);
+
 
     char *str3 = "jump success!\r\n";
     int len3 = strlen(str3);
@@ -368,57 +297,58 @@ int main(void)
         while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
     }
     
-    xTaskCreate(wifi_get_task,"wifi_get_task",512,NULL,3,NULL);
+    xTaskCreate((TaskFunction_t )led_task,
+                (const char*    )"led_task1",
+                (uint16_t       )128,
+                (void*          )&led1_config,
+                (UBaseType_t    )3,
+                (TaskHandle_t*  )&xled_taskHandle);
 
-    xTaskCreate(data_parse_task,"data_parse",256, NULL, 3, NULL);
+    /* OTA 接收：逐字节状态机解析帧 -> 写入 OTA 缓冲区 */
+    xTaskCreate(wifi_get_task,        "wifi_get",    384, NULL, 3, NULL);
+    xTaskCreate(task_ota_flash,       "ota_flash",   256, NULL, 3, NULL);
 
-    xTaskCreate(wifi_send_task,"wifi_send_task",196,NULL,1,&xWifisendTaskHandle);
-    
+    /* 升级触发任务：收到结束帧后写 config + 软复位 */
+    xTaskCreate(request_upgrade_task, "req_upgrade", 128, NULL, 1, &xrequest_upgrade_taskHandle);
+
+    /* WiFi 收发/AT 任务：负责串口提示与连接 */
+    xTaskCreate(wifi_send_task,       "wifi_send",   256, NULL, 1, &xWifisendTaskHandle);
+
         // 启动调度器
     vTaskStartScheduler();
     
     while (1) {
-        GPIO_SetBits(GPIOC, GPIO_Pin_13);
-        delay_ms(1000);
-        for (int i = 0; i < len; i++) {
-            USART_SendData(USART1, str1[i]);
-            while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
-        }
-        GPIO_ResetBits(GPIOC, GPIO_Pin_13);
-        delay_ms(1000);
-        if(request_flag)
-        {
-            delay_ms(20);   // 去抖：在任务里延时，不在中断里
-            request_upgrade();
-            request_flag = 0;
-        }
+
+        // if(request_flag)
+        // {
+        //     delay_ms(20);   // 去抖：在任务里延时，不在中断里
+        //     request_upgrade();
+        //     request_flag = 0;
+        // }
     }
 }
 
-void request_upgrade(void)
+
+void led_task(void *pvParameters)
 {
-    char *str2 = "start upgrade!\r\n";
-    int len = strlen(str2);
-    for (int i = 0; i < len; i++) {
-        USART_SendData(USART1, str2[i]);
-        while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
-    }
-
-    ota_config_t config;
-    config.magic       = 0xDEADBEEF;
-    config.update_flag = 1;
-    config.version     = CURRENT_VERSION;
-    config.firmware_size     = 0;
-    config.crc32    = 0;
-
-    __disable_irq();   // ?? 关全局中断，防止擦写被中断打断
+    LED_Config* config = (LED_Config*)pvParameters;
     
-    // 擦除参数区所在页，写入 config
-    flash_erase(CONFIG_BASE, sizeof(ota_config_t));
-    flash_write(CONFIG_BASE, (uint8_t*)&config, sizeof(ota_config_t));
-
-    // 软复位
-    NVIC_SystemReset();
+    while(1)
+    {
+        if(config->GPIO_Pin==GPIO_Pin_13)
+        {
+            GPIO_ResetBits(config->GPIOx, config->GPIO_Pin);  // LED灭
+            vTaskDelay(pdMS_TO_TICKS(config->delay_off));     // 延时
+            GPIO_SetBits(config->GPIOx, config->GPIO_Pin);    // LED亮
+            vTaskDelay(pdMS_TO_TICKS(config->delay_on));      // 延时
+            xTaskNotify(xWifisendTaskHandle, 0x01, eSetValueWithOverwrite); // 发送心跳通知
+        }else if(config->GPIO_Pin==GPIO_Pin_1){
+            GPIO_SetBits(config->GPIOx, config->GPIO_Pin);    // LED亮
+            vTaskDelay(pdMS_TO_TICKS(config->delay_on));      // 延时
+            GPIO_ResetBits(config->GPIOx, config->GPIO_Pin);  // LED灭
+            vTaskDelay(pdMS_TO_TICKS(config->delay_off));     // 延时
+        }
+    }
 }
 
 #endif

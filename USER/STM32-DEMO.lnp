@@ -5,6 +5,7 @@
 ".\led.o"
 ".\delay.o"
 ".\uart.o"
+".\ota_receive.o"
 ".\stm32f10x_gpio.o"
 ".\stm32f10x_rcc.o"
 ".\stm32f10x_tim.o"

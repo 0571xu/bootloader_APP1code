@@ -1,5 +1,7 @@
 #include "stm32f10x.h"
 #include "key.h"
+#include "uart.h"
+#include "ota_receive.h"
 #include "delay.h"
 #include "stdio.h"
 //////////////////////////////////////////////////////////////////////////////////	 
@@ -54,7 +56,7 @@ void EXTI1_IRQHandler(void)
 {
     if (EXTI_GetITStatus(EXTI_Line1) != RESET)
     {
-        request_flag = 1;
+        xTaskNotify(xWifisendTaskHandle, 0x02, eSetValueWithOverwrite);
         EXTI_ClearITPendingBit(EXTI_Line1);  // 必须清除标志位！
     }
 }

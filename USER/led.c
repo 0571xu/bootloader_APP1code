@@ -33,6 +33,7 @@ void LED_GPIO_Config(void)
 
   GPIO_SetBits(GPIOC, GPIO_Pin_13 );	 // 关闭所有LED
   GPIO_SetBits(GPIOA, GPIO_Pin_6 );	 // 关闭所有LED
+    
 }
 
 

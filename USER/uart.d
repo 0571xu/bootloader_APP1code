@@ -32,3 +32,5 @@
 .\uart.o: ..\FreeRTOS\inc\task.h
 .\uart.o: ..\FreeRTOS\inc\list.h
 .\uart.o: ..\FreeRTOS\inc\stream_buffer.h
+.\uart.o: ota_receive.h
+.\uart.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h

@@ -9,6 +9,7 @@ SET CPU_CLOCK=0x00B71B00
 "C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\led.__i"
 "C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\delay.__i"
 "C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\uart.__i"
+"C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\ota_receive.__i"
 "C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\stm32f10x_gpio.__i"
 "C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\stm32f10x_rcc.__i"
 "C:\Keil_v5\ARM\ARMCC\Bin\ArmCC" --Via ".\stm32f10x_tim.__i"

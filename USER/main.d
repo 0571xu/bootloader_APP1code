@@ -33,6 +33,7 @@
 .\main.o: ..\FreeRTOS\inc\task.h
 .\main.o: ..\FreeRTOS\inc\list.h
 .\main.o: ..\FreeRTOS\inc\stream_buffer.h
+.\main.o: ota_receive.h
 .\main.o: led.h
 .\main.o: ..\HardWare\KEY\key.h
 .\main.o: delay.h
